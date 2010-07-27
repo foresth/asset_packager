@@ -1,12 +1,21 @@
 module Synthesis
   class AssetPackage
 
+    cattr_accessor :compressor
+
     # class variables
     @@asset_packages_yml = $asset_packages_yml || 
-      (File.exists?("#{RAILS_ROOT}/config/asset_packages.yml") ? YAML.load_file("#{RAILS_ROOT}/config/asset_packages.yml") : nil)
+      (File.exists?("#{Rails.root}/config/asset_packages.yml") ? YAML.load_file("#{Rails.root}/config/asset_packages.yml") : nil)
   
     # singleton methods
     class << self
+      
+      def configure
+        # default configuration
+        self.compressor = "jsmin"
+  
+        yield(self)
+      end
       
       def merge_environments=(environments)
         @@merge_environments = environments
@@ -71,13 +80,13 @@ module Synthesis
       end
 
       def create_yml
-        unless File.exists?("#{RAILS_ROOT}/config/asset_packages.yml")
+        unless File.exists?("#{Rails.root}/config/asset_packages.yml")
           asset_yml = Hash.new
 
-          asset_yml['javascripts'] = [{"base" => build_file_list("#{RAILS_ROOT}/public/javascripts", "js")}]
-          asset_yml['stylesheets'] = [{"base" => build_file_list("#{RAILS_ROOT}/public/stylesheets", "css")}]
+          asset_yml['javascripts'] = [{"base" => build_file_list("#{Rails.root}/public/javascripts", "js")}]
+          asset_yml['stylesheets'] = [{"base" => build_file_list("#{Rails.root}/public/stylesheets", "css")}]
 
-          File.open("#{RAILS_ROOT}/config/asset_packages.yml", "w") do |out|
+          File.open("#{Rails.root}/config/asset_packages.yml", "w") do |out|
             YAML.dump(asset_yml, out)
           end
 
@@ -99,7 +108,7 @@ module Synthesis
       @target = target_parts[2].to_s
       @sources = package_hash[package_hash.keys.first]
       @asset_type = asset_type
-      @asset_path = ($asset_base_path ? "#{$asset_base_path}/" : "#{RAILS_ROOT}/public/") +
+      @asset_path = ($asset_base_path ? "#{$asset_base_path}/" : "#{Rails.root}/public/") +
           "#{@asset_type}#{@target_dir.gsub(/^(.+)$/, '/\1')}"
       @extension = get_extension
       @file_name = "#{@target}_packaged.#{@extension}"
@@ -155,14 +164,20 @@ module Synthesis
       end
 
       def compress_js(source)
-        jsmin_path = "#{RAILS_ROOT}/vendor/plugins/asset_packager/lib"
-        tmp_path = "#{RAILS_ROOT}/tmp/#{@target}_packaged"
+        compressor_path = "#{Rails.root}/vendor/plugins/asset_packager/lib"
+        tmp_path = "#{Rails.root}/tmp/#{@target}_packaged"
       
         # write out to a temp file
         File.open("#{tmp_path}_uncompressed.js", "w") {|f| f.write(source) }
-      
-        # compress file with JSMin library
-        `ruby #{jsmin_path}/jsmin.rb <#{tmp_path}_uncompressed.js >#{tmp_path}_compressed.js \n`
+        
+        case compressor
+        when "yuicompressor"
+          # compress file with yuicompressor
+          `java -jar #{compressor_path}/yuicompressor.jar --charset UTF-8 #{tmp_path}_uncompressed.js -o #{tmp_path}_compressed.js \n`
+        else
+          # compress file with JSMin library
+          `ruby #{compressor_path}/jsmin.rb <#{tmp_path}_uncompressed.js >#{tmp_path}_compressed.js \n`
+        end
 
         # read it back in and trim it
         result = ""
@@ -176,13 +191,36 @@ module Synthesis
       end
   
       def compress_css(source)
-        source.gsub!(/\s+/, " ")           # collapse space
-        source.gsub!(/\/\*(.*?)\*\//, "")  # remove comments - caution, might want to remove this if using css hacks
-        source.gsub!(/\} /, "}\n")         # add line breaks
-        source.gsub!(/\n$/, "")            # remove last break
-        source.gsub!(/ \{ /, " {")         # trim inside brackets
-        source.gsub!(/; \}/, "}")          # trim inside brackets
-        source
+        result = nil
+        
+        case compressor
+        when "yuicompressor"
+          compressor_path = "#{Rails.root}/vendor/plugins/asset_packager/lib"
+          tmp_path = "#{Rails.root}/tmp/#{@target}_packaged"
+          
+          # write out to a temp file
+          File.open("#{tmp_path}_uncompressed.css", "w") {|f| f.write(source) }
+          
+          # compress file with yuicompressor
+          `java -jar #{compressor_path}/yuicompressor.jar --charset UTF-8 #{tmp_path}_uncompressed.css -o #{tmp_path}_compressed.css \n`
+          
+          # read it back in and trim it
+          result = ""
+          File.open("#{tmp_path}_compressed.css", "r") { |f| result += f.read.strip }
+    
+          # delete temp files if they exist
+          File.delete("#{tmp_path}_uncompressed.css") if File.exists?("#{tmp_path}_uncompressed.css")
+          File.delete("#{tmp_path}_compressed.css") if File.exists?("#{tmp_path}_compressed.css")
+        else
+          source.gsub!(/\s+/, " ")           # collapse space
+          source.gsub!(/\/\*(.*?)\*\//, "")  # remove comments - caution, might want to remove this if using css hacks
+          source.gsub!(/\} /, "}\n")         # add line breaks
+          source.gsub!(/\n$/, "")            # remove last break
+          source.gsub!(/ \{ /, " {")         # trim inside brackets
+          source.gsub!(/; \}/, "}")          # trim inside brackets
+        end
+        
+        result || source
       end
 
       def get_extension
